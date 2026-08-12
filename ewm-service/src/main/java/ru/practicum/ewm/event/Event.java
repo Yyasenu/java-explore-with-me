@@ -13,10 +13,8 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "events")
-@AllArgsConstructor
+@NoArgsConstructor
 @RequiredArgsConstructor
-@Data
-@Builder
 public class Event {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -40,10 +40,10 @@ public class EventServiceImpl implements EventService {
     private final RequestRepository requestRepository;
     private final CategoryRepository categoryRepository;
     private final StatsClient statsClient;
+    private final ObjectMapper objectMapper;
 
     @Value("${app}")
     private String app;
-
 
     @Override
     @Transactional
@@ -92,7 +92,6 @@ public class EventServiceImpl implements EventService {
                 rangeStart,
                 rangeEnd,
                 PageRequest.of(from / size, size));
-
 
         List<Long> eventIds = events.stream()
                 .map(Event::getId)
@@ -225,7 +224,6 @@ public class EventServiceImpl implements EventService {
                 Request.Status.CONFIRMED
         );
 
-
         List<Request> requests = requestRepository.findAllByIdInAndEventId(updateRequest.getRequestIds(), eventId);
 
         boolean hasNonPending = requests.stream()
@@ -240,7 +238,6 @@ public class EventServiceImpl implements EventService {
         } else {
             return rejection(requests);
         }
-
     }
 
     @Override
@@ -249,19 +246,12 @@ public class EventServiceImpl implements EventService {
             LocalDateTime rangeEnd, Boolean onlyAvailable, String sort,
             Integer from, Integer size, HttpServletRequest request) {
 
-
         statsClient.save(new RequestEndpointHitDto(
                 app,
                 request.getRequestURI(),
                 request.getRemoteAddr(),
                 LocalDateTime.now()
         ));
-
-        try {
-            Thread.sleep(400);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
 
         if (rangeStart == null && rangeEnd == null) {
             rangeStart = LocalDateTime.now();
@@ -297,12 +287,6 @@ public class EventServiceImpl implements EventService {
                 LocalDateTime.now()
         ));
 
-        try {
-            Thread.sleep(400);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
         return eventRepository.findPublishedEventById(eventId)
                 .map(event1 -> {
                     Long confirmedRequests = requestRepository.countByEventIdAndStatus(
@@ -312,7 +296,6 @@ public class EventServiceImpl implements EventService {
                 })
                 .orElseThrow(() -> new NotFoundException("Event was not found: " + eventId));
     }
-
 
     @Override
     public Set<EventShortResponseDto> toShortDtos(Set<Event> events) {
@@ -396,7 +379,6 @@ public class EventServiceImpl implements EventService {
         }
     }
 
-
     private void validationEventDate(LocalDateTime eventDate) {
         log.info("Validating event date: {}, current time: {}", eventDate, LocalDateTime.now());
 
@@ -421,11 +403,7 @@ public class EventServiceImpl implements EventService {
         }
 
         if (event.getState() != Event.EventState.PENDING && event.getState() != Event.EventState.CANCELED) {
-            throw new ConflictException("Only pending or canceled events can be changed");
-        }
-
-        if (updateDto.getEventDate() != null) {
-            validationEventDate(updateDto.getEventDate());
+            throw new ConflictException("Only pending or canceled events can be updated by the user");
         }
 
         return event;
@@ -434,11 +412,6 @@ public class EventServiceImpl implements EventService {
     private void updateEventFields(Event event, UpdateEventUserDto updateDto) {
         if (updateDto.getAnnotation() != null) {
             event.setAnnotation(updateDto.getAnnotation());
-        }
-        if (updateDto.getCategory() != null) {
-            Category category = categoryRepository.findById(updateDto.getCategory())
-                    .orElseThrow(() -> new NotFoundException("Category not found"));
-            event.setCategory(category);
         }
         if (updateDto.getDescription() != null) {
             event.setDescription(updateDto.getDescription());
@@ -449,9 +422,6 @@ public class EventServiceImpl implements EventService {
         if (updateDto.getLocation() != null) {
             event.setLocationLat(updateDto.getLocation().getLat());
             event.setLocationLon(updateDto.getLocation().getLon());
-        }
-        if (updateDto.getPaid() != null) {
-            event.setPaid(updateDto.getPaid());
         }
         if (updateDto.getParticipantLimit() != null) {
             event.setParticipantLimit(updateDto.getParticipantLimit());
@@ -466,115 +436,92 @@ public class EventServiceImpl implements EventService {
         if (updateDto.getStateAction() != null) {
             switch (updateDto.getStateAction()) {
                 case SEND_TO_REVIEW:
+                    if (event.getState() != Event.EventState.CANCELED) {
+                        throw new ConflictException("Can only send to review a canceled event");
+                    }
                     event.setState(Event.EventState.PENDING);
                     break;
-                case CANCEL_REVIEW:
-                    event.setState(Event.EventState.CANCELED);
-                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported state action: " + updateDto.getStateAction());
             }
         }
     }
 
-    private EventRequestStatusUpdateResult confirmation(
-            Event event, List<Request> requests, Long confirmedRequestsCount) {
-        int availableSlots = (int) (event.getParticipantLimit() - confirmedRequestsCount);
-
-        if (availableSlots <= 0) {
-            throw new ConflictException("The participant limit has been reached");
+    private EventRequestStatusUpdateResult confirmation(Event event, List<Request> requests, Long confirmedRequestsCount) {
+        int limit = event.getParticipantLimit();
+        if (limit != null && limit > 0 && confirmedRequestsCount + requests.size() > limit) {
+            throw new ConflictException("Participant limit exceeded");
         }
 
-        List<Request> toConfirm = requests.stream()
-                .limit(availableSlots)
-                .peek(request -> request.setStatus(Request.Status.CONFIRMED))
-                .collect(Collectors.toList());
+        requests.forEach(r -> r.setStatus(Request.Status.CONFIRMED));
+        requestRepository.saveAll(requests);
 
-        List<Request> toReject = requests.size() > availableSlots
-                ? requests.subList(availableSlots, requests.size())
-                : Collections.emptyList();
-
-        toReject.forEach(request -> request.setStatus(Request.Status.REJECTED));
-
-        requestRepository.saveAll(toConfirm);
-        requestRepository.saveAll(toReject);
-
-        return EventMapper.toEventRequestStatusUpdateResult(toConfirm, toReject);
+        return new EventRequestStatusUpdateResult(
+                requests.stream()
+                        .map(Request::getId)
+                        .toList(),
+                Request.Status.CONFIRMED
+        );
     }
 
     private EventRequestStatusUpdateResult rejection(List<Request> requests) {
-        requests.forEach(request -> request.setStatus(Request.Status.REJECTED));
+        requests.forEach(r -> r.setStatus(Request.Status.REJECTED));
         requestRepository.saveAll(requests);
 
-        return EventMapper.toEventRequestStatusUpdateResult(Collections.emptyList(), requests);
-    }
-
-    private Map<Long, Long> getConfirmedRequestsCounts(List<Long> eventIds) {
-        return requestRepository.countByEventIdInAndStatus(eventIds, Request.Status.CONFIRMED)
-                .stream()
-                .collect(Collectors.toMap(
-                        count -> (Long) ((Object[]) count)[0],
-                        count -> (Long) ((Object[]) count)[1]
-                ));
-    }
-
-    private Map<Long, Long> getViewsForEvents(List<Long> eventIds) {
-        List<String> uris = eventIds.stream()
-                .map(id -> "/events/" + id)
-                .collect(Collectors.toList());
-
-        ResponseEntity<Object> response = statsClient.getStats(
-                LocalDateTime.now().minusYears(100),
-                LocalDateTime.now(),
-                uris,
-                true
+        return new EventRequestStatusUpdateResult(
+                requests.stream()
+                        .map(Request::getId)
+                        .toList(),
+                Request.Status.REJECTED
         );
-
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            List<ResponseViewStatsDto> stats = mapper.convertValue(
-                    response.getBody(),
-                    new TypeReference<>() {
-                    }
-            );
-
-            return stats.stream()
-                    .collect(Collectors.toMap(
-                            stat -> Long.parseLong(stat.getUri().substring("/events/".length())),
-                            ResponseViewStatsDto::getHits
-                    ));
-        } catch (Exception e) {
-            throw new StatsClientException("Failed to get stats " + e.getMessage());
-        }
     }
 
     private Long getViewsForEvent(Event event) {
-        final String eventUri = "/events/" + event.getId();
-
         try {
-            ResponseEntity<Object> response = statsClient.getStats(
-                    event.getPublished() != null ? event.getPublished() : LocalDateTime.now().minusYears(100),
-                    LocalDateTime.now(),
-                    List.of(eventUri),
-                    true
-            );
-
-            ObjectMapper mapper = new ObjectMapper();
-            List<ResponseViewStatsDto> stats = mapper.convertValue(
-                    response.getBody(),
-                    new TypeReference<>() {
-                    }
-            );
-
-            return stats.isEmpty() ? 0L : stats.get(0).getHits();
-        } catch (Exception e) {
-            log.error("Failed to get stats for event {}: {}", event.getId(), e.getMessage());
+            ResponseViewStatsDto stats = statsClient.getStats(event.getId());
+            return stats != null ? stats.getViews() : 0L;
+        } catch (StatsClientException e) {
+            log.warn("Failed to fetch stats for event {}", event.getId(), e);
             return 0L;
         }
     }
 
-    private Comparator<EventShortResponseDto> getComparator(String sort) {
-        if ("VIEWS".equals(sort)) {
-            return Comparator.comparingLong(EventShortResponseDto::getViews);
+    private Map<Long, Long> getConfirmedRequestsCounts(List<Long> eventIds) {
+        if (eventIds.isEmpty()) {
+            return Map.of();
         }
-        return Comparator.comparing(EventShortResponseDto::getEventDate);
+        return requestRepository.countConfirmedRequestsByEventIds(eventIds)
+                .stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
+    }
+
+    private Map<Long, Long> getViewsForEvents(List<Long> eventIds) {
+        if (eventIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Long> result = new HashMap<>();
+        for (Long id : eventIds) {
+            try {
+                ResponseViewStatsDto stats = statsClient.getStats(id);
+                result.put(id, stats != null ? stats.getViews() : 0L);
+            } catch (StatsClientException e) {
+                log.warn("Failed to fetch stats for event {}", id, e);
+                result.put(id, 0L);
+            }
+        }
+        return result;
+    }
+
+    private Comparator<EventShortResponseDto> getComparator(String sort) {
+        if ("eventDate".equals(sort)) {
+            return Comparator.comparing(EventShortResponseDto::getEventDate);
+        } else if ("views".equals(sort)) {
+            return Comparator.comparingLong(EventShortResponseDto::getViews);
+        } else {
+            return Comparator.comparing(EventShortResponseDto::getId);
+        }
     }
 }
