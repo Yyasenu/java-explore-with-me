@@ -1,59 +1,66 @@
 package client;
 
 import dto.RequestEndpointHitDto;
+import org.apache.hc.client5.http.classic.HttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Component;
-import org.springframework.web.util.DefaultUriBuilderFactory;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
-@Component
-public class StatsClient extends BaseClient {
-    private static final String API_PREFIX = "";
-    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    public StatsClient(
-            @Value("${stats-service.url}") String serverUrl,
-            RestTemplateBuilder builder
-    ) {
-        super(
-                builder
-                        .uriTemplateHandler(new DefaultUriBuilderFactory(serverUrl + API_PREFIX))
-                        .build()
-        );
+@Service
+public class StatsClient {
+    @Value("${client.url}")
+    private String serverUrl;
+    private final RestTemplate rest;
+
+    public StatsClient() {
+        this.rest = new RestTemplate();
+        HttpClient httpClient = HttpClientBuilder.create().build();
+        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
+        rest.setRequestFactory(requestFactory);
     }
 
-    public ResponseEntity<Object> saveHit(RequestEndpointHitDto endpointHitDto) {
-        return post("/hit", endpointHitDto);
-    }
-
-    public ResponseEntity<Object> getStats(
-            LocalDateTime start,
-            LocalDateTime end,
-            List<String> uris,
-            boolean unique
-    ) {
+    public ResponseEntity<Object> save(RequestEndpointHitDto endpointHitDto) {
+        ResponseEntity<Object> response;
         try {
-            Map<String, Object> parameters = Map.of(
-                    "start", URLEncoder.encode(start.format(FORMATTER), StandardCharsets.UTF_8),
-                    "end", URLEncoder.encode(end.format(FORMATTER), StandardCharsets.UTF_8),
-                    "uris", uris.stream()
-                            .map(uri -> URLEncoder.encode(uri, StandardCharsets.UTF_8))
-                            .collect(Collectors.joining(",")),
-                    "unique", unique
-            );
-
-            return get("/stats", parameters);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to encode URL parameters", e);
+            response = rest.postForEntity(serverUrl + "/hit", endpointHitDto, Object.class);
+        } catch (HttpStatusCodeException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(e.getResponseBodyAsByteArray());
         }
+        ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.status(response.getStatusCode());
+        if (response.hasBody()) {
+            return responseBuilder.body(response.getBody());
+        }
+        return responseBuilder.build();
+    }
+
+    public ResponseEntity<Object> getStats(LocalDateTime start, LocalDateTime end, List<String> uris, Boolean unique) {
+        StringBuilder url = new StringBuilder(serverUrl + "/stats?");
+        for (String uri : uris) {
+            url.append("&uris=").append(uri);
+        }
+        url.append("&unique=").append(unique);
+        url.append("&start=").append(start);
+        url.append("&end=").append(end);
+
+        ResponseEntity<Object> response;
+        try {
+            response = rest.exchange(url.toString(), HttpMethod.GET, null, Object.class);
+        } catch (HttpStatusCodeException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(e.getResponseBodyAsByteArray());
+        }
+        ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.status(response.getStatusCode());
+        if (response.hasBody()) {
+            return responseBuilder.body(response.getBody());
+        }
+        return responseBuilder.build();
     }
 }

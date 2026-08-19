@@ -5,6 +5,7 @@ import dto.ResponseViewStatsDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import ru.practicum.exception.InvalidDateRangeException;
 import ru.practicum.exception.NotFoundException;
 
 import java.time.LocalDateTime;
@@ -29,6 +30,11 @@ public class EndpointHitServiceImpl implements EndpointHitService {
 
     @Override
     public List<ResponseViewStatsDto> getStats(LocalDateTime start, LocalDateTime end, List<String> uris, boolean unique) {
+
+        if (start.isAfter(end)) {
+            throw new InvalidDateRangeException("Start date cannot be after end date");
+        }
+
         return unique
                 ? endpointHitRepository.getUniqueStats(start, end, uris)
                 : endpointHitRepository.getAllStats(start, end, uris);
