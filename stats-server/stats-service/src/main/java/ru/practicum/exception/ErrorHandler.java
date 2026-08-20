@@ -1,5 +1,6 @@
 package ru.practicum.exception;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -15,6 +16,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @RestControllerAdvice
 public class ErrorHandler {
 
@@ -24,6 +26,7 @@ public class ErrorHandler {
     @ExceptionHandler({NotFoundException.class})
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public ApiError handleNotFoundException(final NotFoundException e) {
+        log.warn("Not found error: {}", e.getMessage());
         return buildApiError(
                 e.getMessage(),
                 "The required object was not found.",
@@ -35,6 +38,7 @@ public class ErrorHandler {
     @ExceptionHandler({InvalidDateRangeException.class})
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleInvalidDateRangeException(final InvalidDateRangeException e) {
+        log.warn("Invalid date range error: {}", e.getMessage());
         return buildApiError(
                 e.getMessage(),
                 "Incorrectly made request.",
@@ -43,7 +47,6 @@ public class ErrorHandler {
         );
     }
 
-
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleMethodArgumentNotValid(final MethodArgumentNotValidException e) {
@@ -51,6 +54,7 @@ public class ErrorHandler {
                 .map(error -> error.getField() + ": " + error.getDefaultMessage())
                 .collect(Collectors.toList());
 
+        log.warn("Validation failed for request: {}", errors);
         return buildApiError(
                 "Validation failed",
                 "Incorrectly made request.",
@@ -62,8 +66,10 @@ public class ErrorHandler {
     @ExceptionHandler(MissingServletRequestParameterException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleMissingParams(MissingServletRequestParameterException e) {
+        String msg = "Required parameter '" + e.getParameterName() + "' is missing";
+        log.warn(msg);
         return buildApiError(
-                "Required parameter '" + e.getParameterName() + "' is missing",
+                msg,
                 "Incorrectly made request",
                 HttpStatus.BAD_REQUEST,
                 Collections.singletonList(e.getMessage())
@@ -73,17 +79,21 @@ public class ErrorHandler {
     @ExceptionHandler(MissingRequestHeaderException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleMissingHeader(final MissingRequestHeaderException e) {
+        String headerName = e.getHeaderName();
+        String msg = "Missing header: " + headerName;
+        log.warn(msg);
         return buildApiError(
-                "Missing header: " + e.getHeaderName(),
+                msg,
                 "Incorrectly made request.",
                 HttpStatus.BAD_REQUEST,
-                Collections.singletonList("Отсутствует обязательный заголовок: " + e.getHeaderName())
+                Collections.singletonList("Отсутствует обязательный заголовок: " + headerName)
         );
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleHttpMessageNotReadable(final HttpMessageNotReadableException e) {
+        log.warn("JSON parse error: {}", e.getMessage());
         return buildApiError(
                 "JSON parse error",
                 "Incorrectly made request.",
@@ -95,6 +105,7 @@ public class ErrorHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleIllegalArgument(final IllegalArgumentException e) {
+        log.error("Illegal argument error: {}", e.getMessage(), e);
         return buildApiError(
                 e.getMessage(),
                 "Incorrectly made request.",
@@ -106,11 +117,12 @@ public class ErrorHandler {
     @ExceptionHandler
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiError handleErrors(final Throwable e) {
+        log.error("Unhandled exception occurred", e);
         return buildApiError(
                 "Internal server error",
                 "Произошла непредвиденная ошибка.",
                 HttpStatus.INTERNAL_SERVER_ERROR,
-                Collections.singletonList(e.getMessage())
+                Collections.singletonList("An unexpected error occurred")
         );
     }
 
